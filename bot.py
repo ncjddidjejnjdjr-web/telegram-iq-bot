@@ -1,4 +1,3 @@
-
 import os
 import random
 import logging
@@ -20,6 +19,7 @@ from questions import QUESTIONS
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 CHANNEL_LINK = "https://t.me/+kSSmM7hw2Dg3YWZk"
 
@@ -37,15 +37,46 @@ logger = logging.getLogger(__name__)
 
 
 # =========================
+# اطلاع به ادمین
+# =========================
+
+async def notify_admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    user = update.effective_user
+
+    username = f"@{user.username}" if user.username else "ندارد"
+    full_name = user.full_name or "ندارد"
+
+    message = (
+        "👤 کاربر جدید\n\n"
+        f"🆔 User ID: {user.id}\n"
+        f"👤 Username: {username}\n"
+        f"📛 Name: {full_name}"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=message,
+        )
+
+    except Exception as e:
+        logger.error(
+            "Admin notification error: %s",
+            e,
+        )
+
+
+# =========================
 # فرستادن سؤال
 # =========================
 
-async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    یک سؤال تصادفی ارسال می‌کند.
-    سؤال جدید نباید با سؤال قبلی یکی باشد.
-    """
-
+async def send_question(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     old_question = context.user_data.get("last_question")
 
     available_questions = [
@@ -53,7 +84,6 @@ async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if q != old_question
     ]
 
-    # اگر فقط یک سؤال وجود داشت
     if not available_questions:
         available_questions = QUESTIONS
 
@@ -77,14 +107,12 @@ async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # اگر از /start آمده
     if update.message:
         await update.message.reply_text(
             text,
             reply_markup=reply_markup,
         )
 
-    # اگر از دکمه جواب آمده
     elif update.callback_query:
         await update.callback_query.message.edit_text(
             text,
@@ -93,18 +121,21 @@ async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# دستور /start
+# /start
 # =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    با /start یک سؤال جدید شروع می‌شود.
-    """
-
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     context.user_data.clear()
 
+    # اطلاع به ادمین
+    await notify_admin(update, context)
+
     await update.message.reply_text(
-        "🧠 برای ورود به کانال، اول این سؤال را درست جواب بده:"
+        "🧠 برای ورود به کانال، "
+        "اول این سؤال را درست جواب بده:"
     )
 
     await send_question(update, context)
@@ -124,19 +155,17 @@ async def answer_question(
 
     try:
         _, selected, correct = query.data.split(":")
+
         selected = int(selected)
         correct = int(correct)
 
     except Exception:
         await query.message.reply_text(
-            "خطایی رخ داد. دوباره /start را بزن."
+            "⚠️ خطایی رخ داد. دوباره /start را بزن."
         )
         return
 
-    # =========================
     # جواب درست
-    # =========================
-
     if selected == correct:
 
         keyboard = [
@@ -154,31 +183,26 @@ async def answer_question(
             ],
         ]
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
         await query.message.edit_text(
             "✅ پاسخ درست بود!\n\n"
-            "حالا ابتدا وارد کانال شو و سپس روی «بررسی عضویت» بزن.",
-            reply_markup=reply_markup,
+            "حالا ابتدا وارد کانال شو و "
+            "سپس روی «بررسی عضویت» بزن.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
         return
 
-    # =========================
     # جواب غلط
-    # =========================
-
     await query.answer(
         "❌ پاسخ اشتباه بود! سؤال جدید آمد.",
         show_alert=False,
     )
 
-    # سؤال جدید
     await send_question(update, context)
 
 
 # =========================
-# بررسی عضویت در کانال
+# بررسی عضویت کانال
 # =========================
 
 async def check_membership(
@@ -197,9 +221,11 @@ async def check_membership(
             user_id=user_id,
         )
 
-        status = member.status
-
-        if status in ["member", "administrator", "creator"]:
+        if member.status in [
+            "member",
+            "administrator",
+            "creator",
+        ]:
 
             await query.message.edit_text(
                 "🎉 عضویت شما تأیید شد!\n\n"
@@ -224,8 +250,9 @@ async def check_membership(
             ]
 
             await query.message.edit_text(
-                "❌ هنوز عضویت شما در کانال تأیید نشده است.\n\n"
-                "ابتدا وارد کانال شوید و سپس دوباره بررسی کنید.",
+                "❌ هنوز عضویت شما تأیید نشده است.\n\n"
+                "ابتدا وارد کانال شوید و "
+                "سپس دوباره بررسی کنید.",
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
 
@@ -238,7 +265,7 @@ async def check_membership(
 
         await query.message.edit_text(
             "⚠️ بررسی عضویت انجام نشد.\n"
-            "چند لحظه بعد دوباره امتحان کنید."
+            "مطمئن شوید ربات در کانال ادمین است."
         )
 
 
@@ -250,7 +277,7 @@ def main():
 
     if not TOKEN:
         raise ValueError(
-            "BOT_TOKEN در Environment Variables تنظیم نشده است."
+            "BOT_TOKEN تنظیم نشده است."
         )
 
     application = Application.builder().token(TOKEN).build()
