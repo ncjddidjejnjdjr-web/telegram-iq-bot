@@ -1,6 +1,9 @@
 import os
 import random
 import logging
+import threading
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -37,6 +40,35 @@ logger = logging.getLogger(__name__)
 
 
 # =========================
+# سرور Health برای Render
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_health_server():
+    port = int(os.getenv("PORT", "10000"))
+
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler,
+    )
+
+    logger.info("Health server running on port %s", port)
+
+    server.serve_forever()
+
+
+# =========================
 # اطلاع به ادمین
 # =========================
 
@@ -60,6 +92,12 @@ async def notify_admin(
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=message,
+        )
+
+        logger.info(
+            "Admin notification sent to %s for user %s",
+            ADMIN_ID,
+            user.id,
         )
 
     except Exception as e:
@@ -165,7 +203,10 @@ async def answer_question(
         )
         return
 
+    # =========================
     # جواب درست
+    # =========================
+
     if selected == correct:
 
         keyboard = [
@@ -192,7 +233,10 @@ async def answer_question(
 
         return
 
+    # =========================
     # جواب غلط
+    # =========================
+
     await query.answer(
         "❌ پاسخ اشتباه بود! سؤال جدید آمد.",
         show_alert=False,
@@ -279,6 +323,12 @@ def main():
         raise ValueError(
             "BOT_TOKEN تنظیم نشده است."
         )
+
+    # اجرای سرور HTTP برای Render
+    threading.Thread(
+        target=run_health_server,
+        daemon=True,
+    ).start()
 
     application = Application.builder().token(TOKEN).build()
 
