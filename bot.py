@@ -1,12 +1,9 @@
+```python
 import os
 import random
 import logging
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,13 +14,19 @@ from telegram.ext import (
 from questions import QUESTIONS
 
 
-TOKEN = os.getenv("BOT_TOKEN")
+# =========================
+# تنظیمات
+# =========================
 
-# لینک کانال
+TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+
 CHANNEL_LINK = "https://t.me/+kSSmM7hw2Dg3YWZk"
 
-# بعد از این تعداد پاسخ غلط، دور جدید شروع می‌شود.
-MAX_WRONG = 3
+
+# =========================
+# لاگ
+# =========================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -33,228 +36,248 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def new_game(context, user_id):
-    """شروع یک دور جدید برای کاربر."""
-    context.user_data["used_questions"] = []
-    context.user_data["wrong_answers"] = 0
-    context.user_data["passed"] = False
+# =========================
+# فرستادن سؤال
+# =========================
 
+async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    یک سؤال تصادفی ارسال می‌کند.
+    سؤال جدید نباید با سؤال قبلی یکی باشد.
+    """
 
-def get_next_question(context):
-    """یک سؤال استفاده‌نشده انتخاب می‌کند."""
-    used = context.user_data.get("used_questions", [])
+    old_question = context.user_data.get("last_question")
 
-    available = [
-        i for i in range(len(QUESTIONS))
-        if i not in used
+    available_questions = [
+        q for q in QUESTIONS
+        if q != old_question
     ]
 
-    # اگر همه سؤال‌ها استفاده شده باشند، دور جدید
-    if not available:
-        context.user_data["used_questions"] = []
-        available = list(range(len(QUESTIONS)))
+    # اگر فقط یک سؤال وجود داشت
+    if not available_questions:
+        available_questions = QUESTIONS
 
-    question_index = random.choice(available)
-    context.user_data["used_questions"].append(question_index)
+    question = random.choice(available_questions)
 
-    return question_index
+    context.user_data["last_question"] = question
 
+    text = question["question"]
+    options = question["options"]
+    correct_answer = question["answer"]
 
-def question_keyboard(question_index):
-    question = QUESTIONS[question_index]
+    keyboard = []
 
-    buttons = []
-
-    for i, option in enumerate(question["options"]):
-        buttons.append([
+    for i, option in enumerate(options):
+        keyboard.append([
             InlineKeyboardButton(
                 option,
-                callback_data=f"answer:{question_index}:{i}"
+                callback_data=f"answer:{i}:{correct_answer}",
             )
         ])
 
-    return InlineKeyboardMarkup(buttons)
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-
-async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    question_index = get_next_question(context)
-    question = QUESTIONS[question_index]
-
-    text = (
-        "🧠 **آزمون هوش**\n\n"
-        f"{question['question']}\n\n"
-        "یکی از گزینه‌ها را انتخاب کن:"
-    )
-
-    if update.callback_query:
-        await update.callback_query.edit_message_text(
-            text=text,
-            reply_markup=question_keyboard(question_index),
-            parse_mode="Markdown",
-        )
-    else:
+    # اگر از /start آمده
+    if update.message:
         await update.message.reply_text(
-            text=text,
-            reply_markup=question_keyboard(question_index),
-            parse_mode="Markdown",
+            text,
+            reply_markup=reply_markup,
         )
 
+    # اگر از دکمه جواب آمده
+    elif update.callback_query:
+        await update.callback_query.message.edit_text(
+            text,
+            reply_markup=reply_markup,
+        )
+
+
+# =========================
+# دستور /start
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    """
+    با /start یک سؤال جدید شروع می‌شود.
+    """
 
-    # اطلاعات عمومی کاربر فقط داخل session بات نگهداری می‌شود.
-    context.user_data["user_id"] = user.id
-    context.user_data["username"] = user.username
-    context.user_data["first_name"] = user.first_name
-
-    new_game(context, user.id)
+    context.user_data.clear()
 
     await update.message.reply_text(
-        "🔐 **گارد کانال**\n\n"
-        "برای دسترسی به کانال، ابتدا آزمون را حل کن.\n\n"
-        "هر پاسخ اشتباه یک سؤال جدید می‌آورد.",
-        parse_mode="Markdown",
+        "🧠 برای ورود به کانال، اول این سؤال را درست جواب بده:"
     )
 
     await send_question(update, context)
 
 
-async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# بررسی جواب
+# =========================
+
+async def answer_question(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     query = update.callback_query
+
     await query.answer()
 
     try:
-        _, question_index, selected = query.data.split(":")
-        question_index = int(question_index)
+        _, selected, correct = query.data.split(":")
         selected = int(selected)
-    except (ValueError, AttributeError):
+        correct = int(correct)
+
+    except Exception:
+        await query.message.reply_text(
+            "خطایی رخ داد. دوباره /start را بزن."
+        )
         return
 
-    question = QUESTIONS[question_index]
+    # =========================
+    # جواب درست
+    # =========================
 
-    if selected == question["answer"]:
-        context.user_data["passed"] = True
+    if selected == correct:
 
         keyboard = [
             [
                 InlineKeyboardButton(
-                    "📢 عضویت در کانال",
-                    url=CHANNEL_LINK
+                    "📢 ورود به کانال",
+                    url=CHANNEL_LINK,
                 )
             ],
             [
                 InlineKeyboardButton(
                     "✅ بررسی عضویت",
-                    callback_data="check_membership"
+                    callback_data="check_membership",
                 )
             ],
         ]
 
-        await query.edit_message_text(
-            "✅ **پاسخ درست بود!**\n\n"
-            "حالا در کانال عضو شو و سپس روی «بررسی عضویت» بزن.",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.message.edit_text(
+            "✅ پاسخ درست بود!\n\n"
+            "حالا ابتدا وارد کانال شو و سپس روی «بررسی عضویت» بزن.",
+            reply_markup=reply_markup,
         )
 
-    else:
-        context.user_data["wrong_answers"] += 1
+        return
 
-        wrong = context.user_data["wrong_answers"]
+    # =========================
+    # جواب غلط
+    # =========================
 
-        if wrong >= MAX_WRONG:
-            new_game(context, update.effective_user.id)
+    await query.answer(
+        "❌ پاسخ اشتباه بود! سؤال جدید آمد.",
+        show_alert=False,
+    )
 
-            await query.edit_message_text(
-                "❌ **تعداد خطاها به حد مجاز رسید.**\n\n"
-                "آزمون از ابتدا شروع شد.",
-                parse_mode="Markdown",
-            )
+    # سؤال جدید
+    await send_question(update, context)
 
-            await send_question(update, context)
-            return
 
-        await query.edit_message_text(
-            f"❌ پاسخ اشتباه بود.\n\n"
-            f"تعداد خطا: {wrong}/{MAX_WRONG}\n\n"
-            "سؤال بعدی:",
-        )
-
-        await send_question(update, context)
-
+# =========================
+# بررسی عضویت در کانال
+# =========================
 
 async def check_membership(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
     query = update.callback_query
+
     await query.answer()
 
-    if not context.user_data.get("passed"):
-        await query.answer(
-            "ابتدا آزمون را کامل کن.",
-            show_alert=True
-        )
-        return
-
-    user_id = update.effective_user.id
+    user_id = query.from_user.id
 
     try:
         member = await context.bot.get_chat_member(
-            chat_id=CHANNEL_LINK,
-            user_id=user_id
+            chat_id=CHANNEL_ID,
+            user_id=user_id,
         )
 
-        if member.status in ["member", "administrator", "creator"]:
-            await query.edit_message_text(
-                "🎉 **عضویت تأیید شد!**\n\n"
-                "دسترسی شما تأیید شد.",
-                parse_mode="Markdown",
+        status = member.status
+
+        if status in ["member", "administrator", "creator"]:
+
+            await query.message.edit_text(
+                "🎉 عضویت شما تأیید شد!\n\n"
+                "خوش آمدید."
             )
+
         else:
-            await query.answer(
-                "هنوز عضویت شما تأیید نشده است.",
-                show_alert=True
+
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "📢 ورود به کانال",
+                        url=CHANNEL_LINK,
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔄 بررسی دوباره",
+                        callback_data="check_membership",
+                    )
+                ],
+            ]
+
+            await query.message.edit_text(
+                "❌ هنوز عضویت شما در کانال تأیید نشده است.\n\n"
+                "ابتدا وارد کانال شوید و سپس دوباره بررسی کنید.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
 
     except Exception as e:
-        logger.error("Membership check failed: %s", e)
 
-        await query.answer(
-            "بررسی عضویت انجام نشد. مطمئن شو بات ادمین کانال است.",
-            show_alert=True
+        logger.error(
+            "Membership check error: %s",
+            e,
         )
 
+        await query.message.edit_text(
+            "⚠️ بررسی عضویت انجام نشد.\n"
+            "چند لحظه بعد دوباره امتحان کنید."
+        )
+
+
+# =========================
+# اجرای ربات
+# =========================
 
 def main():
+
     if not TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN environment variable is not set."
+        raise ValueError(
+            "BOT_TOKEN در Environment Variables تنظیم نشده است."
         )
 
-    app = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
         CallbackQueryHandler(
-            answer,
+            answer_question,
             pattern=r"^answer:"
         )
     )
-    app.add_handler(
+
+    application.add_handler(
         CallbackQueryHandler(
             check_membership,
             pattern=r"^check_membership$"
         )
     )
 
-    logger.info("Bot started.")
+    print("Bot is running...")
 
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
+    application.run_polling()
 
 
 if __name__ == "__main__":
     main()
+```
